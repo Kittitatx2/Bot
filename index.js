@@ -1,11 +1,11 @@
 const mineflayer = require('mineflayer');
-const Movements = require('mineflayer-pathfinder').Movements;
-const pathfinder = require('mineflayer-pathfinder').pathfinder;
-const { GoalBlock } = require('mineflayer-pathfinder').goals;
+const { pathfinder, Movements, goals } = require('mineflayer-pathfinder');
+const { GoalBlock } = goals;
 const keepAlive = require("./keep_alive");
+const config = require('./settings.json');
 keepAlive();
 
-const config = require('./settings.json');
+const mySecret = process.env['shared'];
 
 function createBot() {
   const bot = mineflayer.createBot({
@@ -19,63 +19,52 @@ function createBot() {
 
   bot.loadPlugin(pathfinder);
 
-  const mcData = require('minecraft-data')(bot.version);
-  const defaultMove = new Movements(bot, mcData);
-  defaultMove.canDig = true;
-  bot.settings.colorsEnabled = false;
-
-  let pendingPromise = Promise.resolve();
-
-  function sendRegister(password) {
-    return new Promise((resolve, reject) => {
-      bot.chat(`/register ${password} ${password}`);
-      console.log(`[Auth] Sent /register command.`);
-
-      bot.once('chat', (username, message) => {
-        console.log(`[ChatLog] <${username}> ${message}`);
-        if (message.includes('successfully registered')) {
-          console.log('[INFO] Registration confirmed.');
-          resolve();
-        } else if (message.includes('already registered')) {
-          console.log('[INFO] Bot was already registered.');
-          resolve();
-        } else {
-          reject(`Registration failed: "${message}"`);
-        }
-      });
-    });
-  }
-
-  function sendLogin(password) {
-    return new Promise((resolve, reject) => {
-      bot.chat(`/login ${password}`);
-      console.log(`[Auth] Sent /login command.`);
-
-      bot.once('chat', (username, message) => {
-        console.log(`[ChatLog] <${username}> ${message}`);
-        if (message.includes('successfully logged in')) {
-          console.log('[INFO] Login successful.');
-          resolve();
-        } else {
-          reject(`Login failed: "${message}"`);
-        }
-      });
-    });
-  }
-
   bot.once('spawn', () => {
-    console.log('\x1b[33m[AfkBot] Bot joined the server', '\x1b[0m');
+    const mcData = require('minecraft-data')(bot.version);
+    const defaultMove = new Movements(bot, mcData);
+    defaultMove.canDig = false;
+    defaultMove.allowSprinting = false;
+    defaultMove.scafoldingBlocks = [];
 
-    // Auto-auth
-    if (config.utils['auto-auth'].enabled) {
-      const password = config.utils['auto-auth'].password;
-      pendingPromise = pendingPromise
-        .then(() => sendRegister(password))
-        .then(() => sendLogin(password))
-        .catch(error => console.error('[ERROR]', error));
+    bot.pathfinder.setMovements(defaultMove);
+    bot.settings.colorsEnabled = false;
+
+    let pendingPromise = Promise.resolve();
+
+    function sendRegister(password) {
+      return new Promise((resolve, reject) => {
+        bot.chat(`/register ${password} ${password}`);
+        bot.once('chat', (_, message) => {
+          if (message.includes('successfully registered') || message.includes('already registered')) {
+            resolve();
+          } else {
+            reject(`Register failed: ${message}`);
+          }
+        });
+      });
     }
 
-    // Chat messages
+    function sendLogin(password) {
+      return new Promise((resolve, reject) => {
+        bot.chat(`/login ${password}`);
+        bot.once('chat', (_, message) => {
+          if (message.includes('successfully logged in')) {
+            resolve();
+          } else {
+            reject(`Login failed: ${message}`);
+          }
+        });
+      });
+    }
+
+    if (config.utils['auto-auth'].enabled) {
+      const pass = config.utils['auto-auth'].password;
+      pendingPromise = pendingPromise
+        .then(() => sendRegister(pass))
+        .then(() => sendLogin(pass))
+        .catch(console.error);
+    }
+
     if (config.utils['chat-messages'].enabled) {
       const messages = config.utils['chat-messages']['messages'];
       if (config.utils['chat-messages'].repeat) {
@@ -85,85 +74,45 @@ function createBot() {
           i = (i + 1) % messages.length;
         }, config.utils['chat-messages']['repeat-delay'] * 1000);
       } else {
-        messages.forEach((msg) => bot.chat(msg));
+        messages.forEach(msg => bot.chat(msg));
       }
     }
 
-    // เดินไปตำแหน่งที่กำหนด
-    const pos = config.position;
     if (config.position.enabled) {
-      bot.pathfinder.setMovements(defaultMove);
+      const pos = config.position;
       bot.pathfinder.setGoal(new GoalBlock(pos.x, pos.y, pos.z));
+    } else {
+      wanderLoop(); // เริ่มเดินสุ่ม
     }
 
-    // มองกล้องแบบสุ่ม
-    function randomLookAround() {
-      const yaw = Math.random() * 2 * Math.PI;
-      const pitch = (Math.random() - 0.5) * Math.PI / 4;
-      bot.look(yaw, pitch, true, () => {
-        setTimeout(randomLookAround, 4000);
-      });
-    }
-    randomLookAround();
-
-    // สุ่มเป้าหมายภายในรัศมี
-    function getRandomGoal(radius = 15) {
-      const pos = bot.entity.position;
-      const randomX = pos.x + (Math.random() * 2 - 1) * radius;
-      const randomZ = pos.z + (Math.random() * 2 - 1) * radius;
-      const block = bot.blockAt(bot.entity.position.offset(randomX - pos.x, 1, randomZ - pos.z));
-      if (block) {
-        return new GoalBlock(block.position.x, block.position.y, block.position.z);
-      } else {
-        return new GoalBlock(Math.floor(randomX), Math.floor(pos.y), Math.floor(randomZ));
+    function getSafeFlatGoal(radius = 10) {
+      const base = bot.entity.position.floored();
+      for (let i = 0; i < 10; i++) {
+        const dx = Math.floor((Math.random() - 0.5) * radius * 2);
+        const dz = Math.floor((Math.random() - 0.5) * radius * 2);
+        const pos = base.offset(dx, 0, dz);
+        const blockBelow = bot.blockAt(pos.offset(0, -1, 0));
+        const blockAtPos = bot.blockAt(pos);
+        if (blockBelow?.boundingBox === 'block' && blockAtPos?.boundingBox === 'empty') {
+          return new GoalBlock(pos.x, pos.y, pos.z);
+        }
       }
+      return new GoalBlock(base.x, base.y, base.z);
     }
 
-    // เดินแบบ wander
-    function wander() {
-      if (!bot.entity) return;
-
-      const goal = getRandomGoal();
+    function wanderLoop() {
+      const goal = getSafeFlatGoal(15);
+      bot.pathfinder.setGoal(goal);
       console.log(`[AfkBot] เดินไปยัง: ${goal.x}, ${goal.y}, ${goal.z}`);
 
-      bot.pathfinder.setMovements(defaultMove);
-      bot.pathfinder.setGoal(goal);
-
-      function onArrived() {
-        console.log('[AfkBot] ถึงเป้าหมายแล้ว รอสุ่มเป้าหมายใหม่...');
-        cleanUp();
-        setTimeout(wander, 3000);
-      }
-
-      function onFailed() {
-        console.log('[AfkBot] เดินไปไม่ถึงเป้าหมาย ลองสุ่มใหม่...');
-        cleanUp();
-        setTimeout(wander, 3000);
-      }
-
-      function cleanUp() {
+      const onArrived = () => {
+        console.log('[AfkBot] ถึงเป้าหมายแล้ว รอสุ่มใหม่...');
         bot.removeListener('goal_reached', onArrived);
-        bot.removeListener('goal_failed', onFailed);
-      }
-
+        setTimeout(wanderLoop, 3000);
+      };
       bot.once('goal_reached', onArrived);
-      bot.once('goal_failed', onFailed);
-
-      setTimeout(() => {
-        if (!bot.pathfinder.isMoving()) {
-          console.log('[AfkBot] ตรวจพบว่าบอทค้าง, เริ่มเดินใหม่...');
-          cleanUp();
-          wander();
-        }
-      }, 15000);
     }
 
-    if (!config.position.enabled) {
-      bot.pathfinder.setMovements(defaultMove);
-      wander();
-    }
-
-    // Anti-AFK
     if (config.utils['anti-afk'].enabled) {
       setInterval(() => {
         bot.setControlState('jump', true);
@@ -183,6 +132,15 @@ function createBot() {
         }, 4000);
       }
     }
+
+    function randomLookAround() {
+      const yaw = Math.random() * 2 * Math.PI;
+      const pitch = (Math.random() - 0.5) * Math.PI / 4;
+      bot.look(yaw, pitch, true, () => {
+        setTimeout(randomLookAround, 4000);
+      });
+    }
+    randomLookAround();
   });
 
   bot.on('goal_reached', () => {
@@ -201,11 +159,11 @@ function createBot() {
     });
   }
 
-  bot.on('kicked', (reason) => {
+  bot.on('kicked', reason => {
     console.log(`\x1b[33m[AfkBot] Bot was kicked: ${reason}\x1b[0m`);
   });
 
-  bot.on('error', (err) => {
+  bot.on('error', err => {
     console.log(`\x1b[31m[ERROR] ${err.message}\x1b[0m`);
   });
 }
