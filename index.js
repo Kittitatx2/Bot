@@ -191,3 +191,4 @@ function createBot() {
 }
 
 createBot();
+client.login(process.env.TOKEN);
