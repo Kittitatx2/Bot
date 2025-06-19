@@ -22,7 +22,7 @@ function createBot() {
   bot.once('spawn', () => {
     const mcData = require('minecraft-data')(bot.version);
     const defaultMove = new Movements(bot, mcData);
-    defaultMove.canDig = false;
+    defaultMove.canDig = true;  // ✅ สามารถขุดได้
     defaultMove.allowSprinting = false;
     defaultMove.scafoldingBlocks = [];
 
@@ -111,6 +111,36 @@ function createBot() {
         setTimeout(wanderLoop, 3000);
       };
       bot.once('goal_reached', onArrived);
+
+      // ตรวจสอบบล็อกขวางทางและขุด
+      bot.on('path_update', (r) => {
+        if (r.path.length === 0) return;
+
+        const nextBlock = bot.blockAt(r.path[0]);
+        if (nextBlock && nextBlock.type !== 0) {
+          console.log('[AfkBot] ขุดบล็อกที่ขวางทาง...');
+          bot.dig(nextBlock, (err) => {
+            if (err) {
+              console.log('[ERROR] ขุดบล็อกไม่สำเร็จ:', err);
+            }
+          });
+        }
+      });
+
+      // เพิ่มการสร้างบล็อกเพื่อการเดิน
+      bot.on('path_update', (r) => {
+        if (r.path.length === 0) return;
+
+        const nextBlock = bot.blockAt(r.path[0]);
+        if (nextBlock && nextBlock.type === 0) {
+          const blockBelow = bot.blockAt(r.path[0].offset(0, -1, 0));
+          if (blockBelow && blockBelow.type !== 0) {
+            bot.placeBlock(blockBelow, new mineflayer.vec3(0, 1, 0), (err) => {
+              if (err) console.log('[ERROR] สร้างบล็อกไม่สำเร็จ:', err);
+            });
+          }
+        }
+      });
     }
 
     if (config.utils['anti-afk'].enabled) {
